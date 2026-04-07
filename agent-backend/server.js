@@ -246,6 +246,17 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "Agent backend running", timestamp: new Date().toISOString() });
 });
 
+// ── Serve React frontend in production ────────────────────────
+const frontendBuild = path.resolve(__dirname, "../frontend/build");
+import fs from "node:fs";
+if (fs.existsSync(frontendBuild)) {
+  app.use(express.static(frontendBuild));
+  app.get("*", (req, res) => {
+    res.sendFile(path.join(frontendBuild, "index.html"));
+  });
+  console.log("Serving React frontend from", frontendBuild);
+}
+
 // ── Start ─────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`Agent backend running on http://localhost:${PORT}`);

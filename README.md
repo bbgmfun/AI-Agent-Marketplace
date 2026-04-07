@@ -7,7 +7,11 @@ AI Agent Chat Application for Short-Term Stay Listings
 An AI-powered chat application that allows users to interact with a Short-Term Stay booking platform through natural language. The AI agent can search listings, make bookings, and submit reviews on behalf of the user.
 
 ## Source Code
-- **GitHub:** https://github.com/bbgmfun/se4458-ai-agent-listing
+- **GitHub:** https://github.com/bbgmfun/AI-Agent-Marketplace
+
+## Existing Midterm API Deployment
+- **Azure API Docs:** https://stayapi-app.mangowater-b28dd996.swedencentral.azurecontainerapps.io/api-docs/index.html
+- This link is the previously deployed midterm StayAPI/gateway backend used by the AI agent, not a cloud deployment of the AI agent chat app itself.
 
 ## Demo Video
 - **Video Link:** Add your OneDrive, Google Drive, or YouTube demo link here before submission.
@@ -112,8 +116,8 @@ Submit a review for a completed stay.
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/bbgmfun/se4458-ai-agent-listing.git
-cd se4458-ai-agent-listing
+git clone https://github.com/bbgmfun/AI-Agent-Marketplace.git
+cd AI-Agent-Marketplace
 ```
 
 ### 2. Setup Agent Backend
