@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI Agent - Listing Actions</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: #f0f4f8;
+      color: #1a202c;
+    }
+    .app {
+      display: flex; flex-direction: column; height: 100vh;
+      max-width: 800px; margin: 0 auto; background: #ffffff;
+      box-shadow: 0 0 40px rgba(0,0,0,0.08);
+    }
+    .app-header {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 16px 24px; background: linear-gradient(135deg, #2563eb, #3b82f6); color: white;
+    }
+    .header-left { display: flex; align-items: center; gap: 12px; }
+    .header-icon { font-size: 28px; }
+    .app-header h1 { font-size: 18px; font-weight: 600; }
+    .clear-btn {
+      background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.3);
+      color: white; padding: 8px 16px; border-radius: 8px; cursor: pointer; font-size: 13px;
+    }
+    .clear-btn:hover { background: rgba(255,255,255,0.25); }
+    .chat-container { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; }
+    .messages { flex: 1; display: flex; flex-direction: column; gap: 16px; }
+    .message { display: flex; gap: 10px; max-width: 85%; animation: fadeIn 0.3s ease; }
+    .message.user { align-self: flex-end; flex-direction: row-reverse; }
+    .message.assistant { align-self: flex-start; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    .avatar {
+      width: 36px; height: 36px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0;
+    }
+    .user-avatar { background: #e8edf3; }
+    .assistant-avatar { background: #dbeafe; }
+    .bubble { padding: 12px 16px; border-radius: 16px; line-height: 1.5; font-size: 14px; word-break: break-word; }
+    .user-bubble { background: #2563eb; color: white; border-bottom-right-radius: 4px; }
+    .assistant-bubble { background: #f1f5f9; color: #1e293b; border-bottom-left-radius: 4px; }
+    .typing-indicator { display: flex; gap: 4px; padding: 4px 0; }
+    .typing-indicator span {
+      width: 8px; height: 8px; border-radius: 50%; background: #94a3b8;
+      animation: bounce 1.4s infinite ease-in-out;
+    }
+    .typing-indicator span:nth-child(1) { animation-delay: 0s; }
+    .typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
+    .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes bounce {
+      0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+      40% { transform: scale(1); opacity: 1; }
+    }
+    .quick-actions { display: flex; gap: 10px; justify-content: center; padding: 20px 0; flex-wrap: wrap; }
+    .quick-action-btn {
+      display: flex; align-items: center; gap: 8px; padding: 10px 20px;
+      background: white; border: 1.5px solid #cbd5e1; border-radius: 24px;
+      cursor: pointer; font-size: 14px; color: #334155; transition: all 0.2s;
+    }
+    .quick-action-btn:hover {
+      border-color: #2563eb; color: #2563eb; background: #eff6ff;
+      transform: translateY(-1px); box-shadow: 0 2px 8px rgba(37,99,235,0.15);
+    }
+    .qa-icon { font-size: 18px; }
+    .input-bar {
+      display: flex; gap: 10px; padding: 16px 20px;
+      border-top: 1px solid #e2e8f0; background: #ffffff;
+    }
+    .input-bar input {
+      flex: 1; padding: 12px 16px; border: 1.5px solid #cbd5e1;
+      border-radius: 24px; font-size: 14px; outline: none;
+    }
+    .input-bar input:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+    .input-bar button {
+      width: 44px; height: 44px; border: none; border-radius: 50%;
+      background: #2563eb; color: white; font-size: 18px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .input-bar button:hover { background: #1d4ed8; }
+    .input-bar button:disabled { background: #94a3b8; cursor: not-allowed; }
+    /* Listing card styles */
+    .listing-card {
+      background: white; border: 1px solid #e2e8f0; border-radius: 12px;
+      padding: 14px; margin: 8px 0; display: flex; gap: 14px;
+    }
+    .listing-img {
+      width: 90px; height: 70px; border-radius: 8px; object-fit: cover; background: #dbeafe;
+      display: flex; align-items: center; justify-content: center; font-size: 28px; flex-shrink: 0;
+    }
+    .listing-info { flex: 1; }
+    .listing-title { font-weight: 600; font-size: 14px; color: #1e293b; }
+    .listing-meta { font-size: 12px; color: #64748b; margin: 4px 0; display: flex; align-items: center; gap: 4px; }
+    .listing-price { font-weight: 700; font-size: 15px; color: #1e293b; }
+    .listing-price span { font-weight: 400; font-size: 12px; color: #64748b; }
+    .details-btn {
+      padding: 4px 14px; border: 1.5px solid #2563eb; background: white;
+      color: #2563eb; border-radius: 16px; font-size: 12px; cursor: pointer; margin-top: 4px;
+    }
+    .details-btn:hover { background: #eff6ff; }
+    .star { color: #f59e0b; }
+    /* Booking confirm */
+    .booking-card {
+      background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 12px;
+      padding: 16px; margin: 8px 0;
+    }
+    .booking-card h4 { color: #166534; margin-bottom: 8px; font-size: 15px; }
+    .booking-detail { font-size: 13px; color: #334155; margin: 4px 0; }
+    .badge {
+      display: inline-block; padding: 2px 10px; border-radius: 12px;
+      font-size: 11px; font-weight: 600; margin-left: 4px;
+    }
+    .badge-success { background: #dcfce7; color: #166534; }
+    /* Mode banner */
+    .mode-banner {
+      background: #fef3c7; color: #92400e; text-align: center;
+      padding: 8px; font-size: 12px; font-weight: 500;
+    }
+    .mode-banner a { color: #2563eb; }
+    @media (max-width: 600px) {
+      .app { max-width: 100%; }
+      .message { max-width: 92%; }
+      .quick-actions { flex-direction: column; align-items: center; }
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script>
+    // ── Config ──────────────────────────────────────────────────
+    const AGENT_BACKEND = "http://localhost:3001";
+    let backendAvailable = false;
+    let messages = [];
+    let loading = false;
+    const sessionId = "session-" + Date.now();
+
+    // ── Demo data for offline mode ─────────────────────────────
+    const DEMO_LISTINGS = [
+      { id: 1, title: "Charming Studio with Terrace", city: "Paris", country: "France", capacity: 2, price_per_night: 120, rating: 4.9, description: "Cozy studio with beautiful terrace view" },
+      { id: 2, title: "Elegant Flat near the Eiffel Tower", city: "Paris", country: "France", capacity: 2, price_per_night: 150, rating: 4.7, description: "Modern flat walking distance to Eiffel Tower" },
+      { id: 3, title: "Sunny Apartment in Taksim", city: "Istanbul", country: "Turkey", capacity: 4, price_per_night: 85, description: "Spacious apartment in the heart of Istanbul" },
+      { id: 4, title: "Modern Loft in Kadikoy", city: "Istanbul", country: "Turkey", capacity: 3, price_per_night: 95, rating: 4.5, description: "Stylish loft with Bosphorus view" },
+    ];
+
+    const DEMO_RESPONSES = {
+      query: (msg) => {
+        const cards = DEMO_LISTINGS.map(l => renderListingCard(l)).join("");
+        return `<div style="margin-bottom:4px"><b>Available listings:</b></div>${cards}`;
+      },
+      book: () => {
+        return `<div class="booking-card">
+          <h4>Stay successfully booked! <span class="badge badge-success">Confirmed</span></h4>
+          <div class="listing-card" style="border:none;padding:8px 0">
+            <div class="listing-img">🏠</div>
+            <div class="listing-info">
+              <div class="listing-title">Charming Studio with Terrace</div>
+              <div class="listing-meta">Paris, France</div>
+            </div>
+          </div>
+          <div class="booking-detail"><b>Check-In:</b> June 5 &mdash; <b>Check-Out:</b> June 8</div>
+          <div class="booking-detail"><b>Ticket Number:</b> 98765432</div>
+          <div class="booking-detail">👤 John Doe - Jane Doe</div>
+        </div>`;
+      },
+      review: () => {
+        return `<div class="booking-card" style="background:#eff6ff;border-color:#bfdbfe">
+          <h4 style="color:#1e40af">Review submitted successfully! <span class="badge" style="background:#dbeafe;color:#1e40af">⭐ 5/5</span></h4>
+          <div class="booking-detail"><b>Listing:</b> Charming Studio with Terrace</div>
+          <div class="booking-detail"><b>Comment:</b> "Amazing stay! The terrace view was breathtaking."</div>
+        </div>`;
+      },
+      default: (msg) => {
+        return `I can help you with:\n\n• **Query Listings** - Search available stays\n• **Book a Listing** - Make a reservation\n• **Review a Listing** - Leave feedback\n\nWhat would you like to do?`;
+      }
+    };
+
+    function renderListingCard(l) {
+      const stars = l.rating ? `<span class="star">⭐</span> ${l.rating}` : "";
+      return `<div class="listing-card">
+        <div class="listing-img">🏠</div>
+        <div class="listing-info">
+          <div class="listing-title">${l.title}</div>
+          <div class="listing-meta">${stars} ${l.city}, ${l.country} · ${l.capacity} guests</div>
+          <div style="display:flex;align-items:center;gap:10px;margin-top:4px">
+            <div class="listing-price">$${l.price_per_night}<span>/night</span></div>
+            <button class="details-btn" onclick="sendMessage('Tell me more about ${l.title}')">Details</button>
+          </div>
+        </div>
+      </div>`;
+    }
+
+    function classifyMessage(msg) {
+      const lower = msg.toLowerCase();
+      if (lower.includes("listing") && (lower.includes("show") || lower.includes("search") || lower.includes("find") || lower.includes("query") || lower.includes("available") || lower.includes("browse")))
+        return "query";
+      if (lower.includes("book") || lower.includes("reserve") || lower.includes("reservation"))
+        return "book";
+      if (lower.includes("review") || lower.includes("rate") || lower.includes("feedback") || lower.includes("comment"))
+        return "review";
+      return "default";
+    }
+
+    // ── Check backend availability ─────────────────────────────
+    async function checkBackend() {
+      try {
+        const r = await fetch(AGENT_BACKEND + "/api/health", { signal: AbortSignal.timeout(2000) });
+        backendAvailable = r.ok;
+      } catch { backendAvailable = false; }
+      renderBanner();
+    }
+
+    // ── Render ─────────────────────────────────────────────────
+    function render() {
+      const root = document.getElementById("root");
+      root.innerHTML = `
+        <div class="app">
+          <header class="app-header">
+            <div class="header-left">
+              <span class="header-icon">🏠</span>
+              <h1>AI Agent - Listing Actions</h1>
+            </div>
+            <button class="clear-btn" onclick="clearChat()">🗑️ Clear</button>
+          </header>
+          <div id="banner-area"></div>
+          <div class="chat-container" id="chat-container">
+            <div class="messages" id="messages-area"></div>
+            ${messages.length <= 1 ? renderQuickActions() : ""}
+          </div>
+          <form class="input-bar" onsubmit="handleSubmit(event)">
+            <input id="chat-input" type="text" placeholder="What can I assist you with?" ${loading ? "disabled" : ""} autofocus />
+            <button type="submit" ${loading ? "disabled" : ""}>➤</button>
+          </form>
+        </div>
+      `;
+      renderMessages();
+      renderBanner();
+      scrollToBottom();
+    }
+
+    function renderBanner() {
+      const area = document.getElementById("banner-area");
+      if (!area) return;
+      if (!backendAvailable) {
+        area.innerHTML = `<div class="mode-banner">Demo mode — Agent backend not detected. Start backend on port 3001 for live AI responses.</div>`;
+      } else {
+        area.innerHTML = `<div class="mode-banner" style="background:#dcfce7;color:#166534">Connected to Agent Backend ✓</div>`;
+      }
+    }
+
+    function renderQuickActions() {
+      return `<div class="quick-actions">
+        <button class="quick-action-btn" onclick="sendMessage('Show me available listings')"><span class="qa-icon">🔍</span><span>Query Listing</span></button>
+        <button class="quick-action-btn" onclick="sendMessage('I would like to book a listing')"><span class="qa-icon">⭐</span><span>Book a Listing</span></button>
+        <button class="quick-action-btn" onclick="sendMessage('I want to review a listing')"><span class="qa-icon">📝</span><span>Review a Listing</span></button>
+      </div>`;
+    }
+
+    function renderMessages() {
+      const area = document.getElementById("messages-area");
+      if (!area) return;
+      let html = "";
+      messages.forEach(m => {
+        const isUser = m.role === "user";
+        html += `<div class="message ${isUser ? "user" : "assistant"}">
+          <div class="avatar ${isUser ? "user-avatar" : "assistant-avatar"}">${isUser ? "👤" : "🤖"}</div>
+          <div class="bubble ${isUser ? "user-bubble" : "assistant-bubble"}">${
+            isUser ? `<p>${escapeHtml(m.content)}</p>` : (m.isHtml ? m.content : markdownToHtml(m.content))
+          }</div>
+        </div>`;
+      });
+      if (loading) {
+        html += `<div class="message assistant">
+          <div class="avatar assistant-avatar">🤖</div>
+          <div class="bubble assistant-bubble"><div class="typing-indicator"><span></span><span></span><span></span></div></div>
+        </div>`;
+      }
+      area.innerHTML = html;
+    }
+
+    function escapeHtml(s) { return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+    function markdownToHtml(text) {
+      if (!text) return "";
+      return text
+        .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+        .replace(/\*(.*?)\*/g, "<em>$1</em>")
+        .replace(/`(.*?)`/g, "<code style='background:#e2e8f0;padding:2px 6px;border-radius:4px;font-size:13px'>$1</code>")
+        .replace(/^• (.*)$/gm, "<li>$1</li>")
+        .replace(/^- (.*)$/gm, "<li>$1</li>")
+        .replace(/\n/g, "<br>");
+    }
+
+    function scrollToBottom() {
+      const c = document.getElementById("chat-container");
+      if (c) setTimeout(() => c.scrollTop = c.scrollHeight, 50);
+    }
+
+    // ── Actions ────────────────────────────────────────────────
+    async function sendMessage(text) {
+      if (!text || !text.trim() || loading) return;
+      messages.push({ role: "user", content: text.trim() });
+      loading = true;
+      render();
+      document.getElementById("chat-input").value = "";
+
+      if (backendAvailable) {
+        try {
+          const res = await fetch(AGENT_BACKEND + "/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ message: text.trim(), sessionId }),
+          });
+          const data = await res.json();
+          messages.push({ role: "assistant", content: data.response });
+        } catch (e) {
+          messages.push({ role: "assistant", content: "Connection error: " + e.message });
+        }
+      } else {
+        // Demo mode
+        await new Promise(r => setTimeout(r, 800 + Math.random() * 600));
+        const type = classifyMessage(text);
+        const resp = DEMO_RESPONSES[type](text);
+        const isHtml = resp.includes("<div");
+        messages.push({ role: "assistant", content: resp, isHtml });
+      }
+
+      loading = false;
+      render();
+      document.getElementById("chat-input")?.focus();
+    }
+
+    function handleSubmit(e) {
+      e.preventDefault();
+      const input = document.getElementById("chat-input");
+      sendMessage(input.value);
+    }
+
+    function clearChat() {
+      messages = [{ role: "assistant", content: "Hello! How can I assist you today?" }];
+      if (backendAvailable) {
+        fetch(AGENT_BACKEND + "/api/chat/clear", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId }),
+        }).catch(() => {});
+      }
+      render();
+    }
+
+    // ── Init ───────────────────────────────────────────────────
+    messages.push({ role: "assistant", content: "Hello! How can I assist you today?" });
+    render();
+    checkBackend();
+  </script>
+</body>
+</html>
