@@ -4,10 +4,11 @@
   "description": "SE4458 Assignment 2 - AI Agent Chat Application for Short-Term Stay Listings",
   "private": true,
   "scripts": {
-    "install:all": "cd mcp-server && npm install && cd ../agent-backend && npm install && cd ../frontend && npm install",
+    "install:all": "npm install && cd mcp-server && npm install && cd ../agent-backend && npm install && cd ../frontend && npm install",
+    "start:ollama": "OLLAMA_KEEP_ALIVE=0 ollama serve",
     "start:backend": "cd agent-backend && npm start",
     "start:frontend": "cd frontend && npm start",
-    "start": "concurrently \"npm run start:backend\" \"npm run start:frontend\""
+    "start": "concurrently --kill-others-on-fail --names ollama,backend,frontend \"npm run start:ollama\" \"npm run start:backend\" \"npm run start:frontend\""
   },
   "devDependencies": {
     "concurrently": "^8.2.2"

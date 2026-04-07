@@ -7,7 +7,7 @@ function ChatMessage({ message }) {
   return (
     <div className={`message ${isUser ? "user" : "assistant"}`}>
       <div className={`avatar ${isUser ? "user-avatar" : "assistant-avatar"}`}>
-        {isUser ? "👤" : "🤖"}
+        {isUser ? "You" : "AI"}
       </div>
       <div
         className={`bubble ${isUser ? "user-bubble" : "assistant-bubble"} ${

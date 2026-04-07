@@ -37,19 +37,19 @@ An AI-powered chat application that allows users to interact with a Short-Term S
 | Component | Technology | Description |
 |-----------|-----------|-------------|
 | Frontend | React 18 | Chat UI with quick actions, markdown rendering, typing indicators |
-| Agent Backend | Node.js + Express | Receives messages, sends them to Claude, acts as an MCP client over stdio, and relays tool calls/results |
+| Agent Backend | Node.js + Express | Receives messages, sends them to a live LLM, acts as an MCP client over stdio, and relays tool calls/results |
 | MCP Server | Node.js + @modelcontextprotocol/sdk | Exposes 3 tools (query_listings, book_listing, review_listing) and maps them to the API Gateway |
-| LLM | Claude (Anthropic API) | Parses user intent, decides which MCP tool to call, formats responses |
+| LLM | Ollama local model or Claude (Anthropic API) | Parses user intent, decides which MCP tool to call, formats responses |
 | API Gateway | Midterm REST API | Existing Short-Term Stay API with JWT auth |
 
 ### Flow
 1. User sends a message through the React chat UI
-2. Agent backend receives the message and forwards it to Claude with conversation history
+2. Agent backend receives the message and forwards it to the configured LLM with conversation history
 3. Agent backend starts the MCP server as a stdio child process and fetches the available tool schemas
-4. Claude analyzes the user's intent and decides which MCP tool to call
+4. The LLM analyzes the user's intent and decides which MCP tool to call
 5. Agent backend forwards that tool call to the MCP server over stdio
 6. MCP server calls the API Gateway (midterm API) endpoint and returns the result
-7. Claude formats the MCP tool result into a user-friendly reply
+7. The LLM formats the MCP tool result into a user-friendly reply
 8. Response is displayed in the chat UI
 
 ---
@@ -57,9 +57,9 @@ An AI-powered chat application that allows users to interact with a Short-Term S
 ## Design Decisions & Assumptions
 
 ### Design
-- **Claude as LLM:** Used Anthropic's Claude API for superior tool-calling and natural language understanding
+- **Local-first LLM support:** The backend can use a free Ollama local model by default, with Anthropic as an optional fallback
 - **MCP Protocol:** Implemented a proper MCP server with stdio transport, with the agent backend connecting as an MCP client
-- **Agentic Loop:** The agent backend runs a loop allowing Claude to make multiple tool calls per user message if needed
+- **Agentic Loop:** The agent backend runs a loop allowing the configured LLM to make multiple tool calls per user message if needed
 - **Session Management:** Each chat session has isolated conversation history to maintain context
 - **JWT Auth Caching:** Auth tokens are cached for 50 minutes (token lifetime is 60 min) to minimize login requests
 - **Constant Guest Account:** The MCP server logs in with a constant guest username/password, and auto-registers the guest account on first use if needed
@@ -112,7 +112,7 @@ Submit a review for a completed stay.
 
 ### Prerequisites
 - Node.js 18+
-- Anthropic API Key
+- Ollama for the free local setup, or an Anthropic API key for the cloud setup
 
 ### 1. Clone the Repository
 ```bash
@@ -120,16 +120,23 @@ git clone https://github.com/bbgmfun/AI-Agent-Marketplace.git
 cd AI-Agent-Marketplace
 ```
 
-### 2. Setup Agent Backend
+### 2. Start a Free Local LLM with Ollama
+```bash
+brew install ollama
+ollama pull qwen3
+```
+
+### 3. Setup Agent Backend
 ```bash
 cd agent-backend
 npm install
 cp .env.example .env
-# Edit .env and add your ANTHROPIC_API_KEY
+# Optional: set LLM_PROVIDER=ollama explicitly
+# Optional: if you want cloud fallback instead, add ANTHROPIC_API_KEY
 npm start
 ```
 
-### 3. MCP Server Integration
+### 4. MCP Server Integration
 ```bash
 cd mcp-server
 npm install
@@ -137,14 +144,20 @@ npm install
 # You do not need to run it manually during normal usage.
 ```
 
-### 4. Setup Frontend
+### 5. Setup Frontend
 ```bash
 cd frontend
 npm install
+```
+
+### 6. Open the Application
+From the project root, start everything together:
+```bash
 npm start
 ```
 
-### 5. Open the Application
+This starts Ollama, the backend, and the frontend together. Ollama is configured with `OLLAMA_KEEP_ALIVE=0`, so the model unloads after requests instead of staying hot in memory.
+
 Navigate to `http://localhost:3000` in your browser.
 
 ---
@@ -153,7 +166,11 @@ Navigate to `http://localhost:3000` in your browser.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| ANTHROPIC_API_KEY | Anthropic API key for Claude | (required) |
+| LLM_PROVIDER | LLM selection mode: `auto`, `ollama`, or `anthropic` | `auto` |
+| OLLAMA_BASE_URL | Local Ollama API base URL | `http://127.0.0.1:11434` |
+| OLLAMA_MODEL | Ollama model name used for chat and tool calling | `qwen3` |
+| ANTHROPIC_API_KEY | Anthropic API key for Claude | (optional) |
+| ANTHROPIC_MODEL | Anthropic model name | `claude-sonnet-4-20250514` |
 | API_BASE_URL | Midterm API base URL | https://stayapi-app.mangowater-b28dd996.swedencentral.azurecontainerapps.io |
 | API_USERNAME | Guest username used for authenticated calls | se4458_listing_guest |
 | API_PASSWORD | Login password for API auth | guest123 |
@@ -165,7 +182,7 @@ Navigate to `http://localhost:3000` in your browser.
 ## Technologies Used
 - **React 18** - Frontend chat UI
 - **Node.js + Express** - Agent backend server
-- **Anthropic Claude API** - LLM for intent parsing and tool calling
+- **Ollama / Anthropic Claude API** - LLM for intent parsing and tool calling
 - **@modelcontextprotocol/sdk** - MCP server implementation
 - **react-markdown** - Rendering AI responses in chat
 - **JWT** - API authentication

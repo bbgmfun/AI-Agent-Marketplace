@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import Anthropic from "@anthropic-ai/sdk";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -19,18 +20,131 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const MCP_SERVER_PATH = path.resolve(__dirname, "../mcp-server/index.js");
 const MCP_SERVER_CWD = path.dirname(MCP_SERVER_PATH);
-
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const LLM_PROVIDER = (process.env.LLM_PROVIDER || "auto").trim().toLowerCase();
+const OLLAMA_BASE_URL = (process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434").replace(/\/+$/, "");
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "qwen3";
+const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-20250514";
+const anthropicApiKey = process.env.ANTHROPIC_API_KEY?.trim();
+const anthropicConfigured = Boolean(
+  anthropicApiKey &&
+    anthropicApiKey !== "dummy" &&
+    anthropicApiKey !== "your_anthropic_api_key_here"
+);
+const anthropicClient = anthropicConfigured ? new Anthropic({ apiKey: anthropicApiKey }) : null;
+const ollamaClient = new Anthropic({
+  baseURL: OLLAMA_BASE_URL,
+  apiKey: "ollama",
+});
 let mcpClient = null;
 let mcpTransport = null;
-let anthropicTools = null;
+let llmTools = null;
 let mcpConnectionPromise = null;
+
+function getAnthropicConfigError() {
+  return "Anthropic API key is missing or invalid. Set ANTHROPIC_API_KEY in agent-backend/.env and restart the backend.";
+}
+
+function getOllamaInstallError() {
+  return `Ollama is not reachable at ${OLLAMA_BASE_URL}. Install Ollama, start the service, and try again.`;
+}
+
+function getOllamaModelError() {
+  return `Ollama is running but the model '${OLLAMA_MODEL}' is not installed. Run: ollama pull ${OLLAMA_MODEL}`;
+}
+
+function getMissingLlmError() {
+  return `No live LLM is configured. Free option: install Ollama, start it, and pull '${OLLAMA_MODEL}'. Paid option: set ANTHROPIC_API_KEY.`;
+}
+
+async function getOllamaStatus() {
+  try {
+    const response = await fetch(`${OLLAMA_BASE_URL}/api/tags`);
+    if (!response.ok) {
+      return {
+        available: false,
+        modelReady: false,
+        models: [],
+      };
+    }
+
+    const data = await response.json();
+    const models = Array.isArray(data?.models) ? data.models.map((model) => model.name).filter(Boolean) : [];
+    const modelReady = models.some((name) => {
+      return (
+        name === OLLAMA_MODEL ||
+        name === `${OLLAMA_MODEL}:latest` ||
+        name.startsWith(`${OLLAMA_MODEL}:`)
+      );
+    });
+
+    return {
+      available: true,
+      modelReady,
+      models,
+    };
+  } catch {
+    return {
+      available: false,
+      modelReady: false,
+      models: [],
+    };
+  }
+}
+
+async function resolveLlmConfig() {
+  const ollamaStatus = await getOllamaStatus();
+
+  if (LLM_PROVIDER === "ollama") {
+    if (!ollamaStatus.available) throw new Error(getOllamaInstallError());
+    if (!ollamaStatus.modelReady) throw new Error(getOllamaModelError());
+    return {
+      provider: "ollama",
+      client: ollamaClient,
+      model: OLLAMA_MODEL,
+      ollamaStatus,
+    };
+  }
+
+  if (LLM_PROVIDER === "anthropic") {
+    if (!anthropicClient) throw new Error(getAnthropicConfigError());
+    return {
+      provider: "anthropic",
+      client: anthropicClient,
+      model: ANTHROPIC_MODEL,
+      ollamaStatus,
+    };
+  }
+
+  if (ollamaStatus.available && ollamaStatus.modelReady) {
+    return {
+      provider: "ollama",
+      client: ollamaClient,
+      model: OLLAMA_MODEL,
+      ollamaStatus,
+    };
+  }
+
+  if (anthropicClient) {
+    return {
+      provider: "anthropic",
+      client: anthropicClient,
+      model: ANTHROPIC_MODEL,
+      ollamaStatus,
+    };
+  }
+
+  if (ollamaStatus.available && !ollamaStatus.modelReady) {
+    throw new Error(getOllamaModelError());
+  }
+
+  throw new Error(getMissingLlmError());
+}
 
 function resetMcpConnection() {
   const transportToClose = mcpTransport;
   mcpClient = null;
   mcpTransport = null;
-  anthropicTools = null;
+  llmTools = null;
   mcpConnectionPromise = null;
 
   if (transportToClose) {
@@ -71,8 +185,8 @@ function formatMcpToolResult(result) {
 }
 
 async function getMcpConnection() {
-  if (mcpClient && mcpTransport && anthropicTools) {
-    return { client: mcpClient, tools: anthropicTools };
+  if (mcpClient && mcpTransport && llmTools) {
+    return { client: mcpClient, tools: llmTools };
   }
 
   if (mcpConnectionPromise) return mcpConnectionPromise;
@@ -96,7 +210,7 @@ async function getMcpConnection() {
     transport.onclose = () => {
       mcpClient = null;
       mcpTransport = null;
-      anthropicTools = null;
+      llmTools = null;
       mcpConnectionPromise = null;
     };
 
@@ -114,9 +228,9 @@ async function getMcpConnection() {
 
     mcpClient = client;
     mcpTransport = transport;
-    anthropicTools = mapMcpToolsToAnthropic(tools);
+    llmTools = mapMcpToolsToAnthropic(tools);
 
-    return { client, tools: anthropicTools };
+    return { client, tools: llmTools };
   })().catch((error) => {
     resetMcpConnection();
     throw error;
@@ -148,21 +262,23 @@ async function executeTool(toolName, toolInput) {
 
 // ── Chat Endpoint ─────────────────────────────────────────────
 const conversationHistory = new Map(); // sessionId -> messages[]
+const MAX_HISTORY_MESSAGES = 20;
+const MAX_AGENT_STEPS = 8;
 
 app.post("/api/chat", async (req, res) => {
   try {
     const { message, sessionId = "default" } = req.body;
     if (!message) return res.status(400).json({ error: "Message is required" });
+    const llm = await resolveLlmConfig();
     const { tools } = await getMcpConnection();
 
     // Get or create conversation history
     if (!conversationHistory.has(sessionId)) {
       conversationHistory.set(sessionId, []);
     }
-    const messages = conversationHistory.get(sessionId);
+    const priorMessages = conversationHistory.get(sessionId);
 
-    // Add user message
-    messages.push({ role: "user", content: message });
+    const currentMessages = [...priorMessages, { role: "user", content: message }];
 
     const systemPrompt = `You are a helpful AI assistant for a short-term stay booking platform (like Airbnb).
 You help users with three main tasks:
@@ -178,13 +294,17 @@ Always be friendly and provide clear information. Format listing results nicely.
 If the user provides partial info, ask for the missing details before making a tool call.
 For dates, prefer YYYY-MM-DD format unless the user gives a full datetime.`;
 
-    // Call Claude with tools — agentic loop
-    let currentMessages = [...messages];
     let finalResponse = "";
+    let steps = 0;
 
     while (true) {
-      const response = await anthropic.messages.create({
-        model: "claude-sonnet-4-20250514",
+      steps += 1;
+      if (steps > MAX_AGENT_STEPS) {
+        throw new Error("The agent exceeded the maximum number of tool-calling steps.");
+      }
+
+      const response = await llm.client.messages.create({
+        model: llm.model,
         max_tokens: 4096,
         system: systemPrompt,
         tools,
@@ -222,14 +342,32 @@ For dates, prefer YYYY-MM-DD format unless the user gives a full datetime.`;
       break;
     }
 
-    // Update conversation history (keep last 20 messages to avoid token limits)
-    const updatedMessages = currentMessages.slice(-20);
-    updatedMessages.push({ role: "assistant", content: finalResponse });
+    const updatedMessages = [
+      ...priorMessages,
+      { role: "user", content: message },
+      { role: "assistant", content: finalResponse },
+    ].slice(-MAX_HISTORY_MESSAGES);
     conversationHistory.set(sessionId, updatedMessages);
 
-    res.json({ response: finalResponse, sessionId });
+    res.json({ response: finalResponse, sessionId, provider: llm.provider });
   } catch (err) {
     console.error("Chat error:", err);
+    if (err?.status === 401) {
+      return res.status(502).json({
+        error: `Anthropic authentication failed: ${err?.error?.error?.message || err.message}. Update ANTHROPIC_API_KEY in agent-backend/.env and restart the backend.`,
+      });
+    }
+
+    if (typeof err?.message === "string") {
+      if (
+        err.message.includes("Ollama") ||
+        err.message.includes("No live LLM") ||
+        err.message.includes("maximum number of tool-calling steps")
+      ) {
+        return res.status(503).json({ error: err.message });
+      }
+    }
+
     res.status(500).json({ error: err.message || "Internal server error" });
   }
 });
@@ -242,13 +380,34 @@ app.post("/api/chat/clear", (req, res) => {
 });
 
 // ── Health check ──────────────────────────────────────────────
-app.get("/api/health", (req, res) => {
-  res.json({ status: "Agent backend running", timestamp: new Date().toISOString() });
+app.get("/api/health", async (req, res) => {
+  const ollamaStatus = await getOllamaStatus();
+  let liveReady = false;
+  let activeProvider = null;
+
+  try {
+    const llm = await resolveLlmConfig();
+    liveReady = true;
+    activeProvider = llm.provider;
+  } catch {}
+
+  res.json({
+    status: "Agent backend running",
+    liveReady,
+    activeProvider,
+    preferredProvider: LLM_PROVIDER,
+    anthropicConfigured,
+    anthropicModel: ANTHROPIC_MODEL,
+    ollamaAvailable: ollamaStatus.available,
+    ollamaModelReady: ollamaStatus.modelReady,
+    ollamaModel: OLLAMA_MODEL,
+    ollamaBaseUrl: OLLAMA_BASE_URL,
+    timestamp: new Date().toISOString(),
+  });
 });
 
 // ── Serve React frontend in production ────────────────────────
 const frontendBuild = path.resolve(__dirname, "../frontend/build");
-import fs from "node:fs";
 if (fs.existsSync(frontendBuild)) {
   app.use(express.static(frontendBuild));
   app.get("*", (req, res) => {
