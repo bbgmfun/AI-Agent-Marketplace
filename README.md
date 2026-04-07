@@ -1,6 +1,6 @@
-# SE4458 Assignment 2 - AI Agent Chat Application for Short-Term Stay Listings
+AI Agent Chat Application for Short-Term Stay Listings
 
-## Student
+
 **Begum Bal**
 
 ## Project Overview
