@@ -2,7 +2,10 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import Anthropic from "@anthropic-ai/sdk";
-import fetch from "node-fetch";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 dotenv.config();
 
@@ -11,147 +14,136 @@ app.use(cors());
 app.use(express.json());
 
 // ── Configuration ──────────────────────────────────────────────
-const API_BASE = process.env.API_BASE_URL || "https://stayapi-app.mangowater-b28dd996.swedencentral.azurecontainerapps.io";
-const API_EMAIL = process.env.API_EMAIL || "guest@example.com";
-const API_PASSWORD = process.env.API_PASSWORD || "guest123";
 const PORT = process.env.PORT || 3001;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const MCP_SERVER_PATH = path.resolve(__dirname, "../mcp-server/index.js");
+const MCP_SERVER_CWD = path.dirname(MCP_SERVER_PATH);
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+let mcpClient = null;
+let mcpTransport = null;
+let anthropicTools = null;
+let mcpConnectionPromise = null;
 
-let cachedToken = null;
-let tokenExpiry = 0;
+function resetMcpConnection() {
+  const transportToClose = mcpTransport;
+  mcpClient = null;
+  mcpTransport = null;
+  anthropicTools = null;
+  mcpConnectionPromise = null;
 
-// ── Auth Helper ────────────────────────────────────────────────
-async function getAuthToken() {
-  if (cachedToken && Date.now() < tokenExpiry) return cachedToken;
-  try {
-    const res = await fetch(`${API_BASE}/api/v1/auth/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: API_EMAIL, password: API_PASSWORD }),
+  if (transportToClose) {
+    transportToClose.close().catch(() => {});
+  }
+}
+
+function mapMcpToolsToAnthropic(tools) {
+  return tools.map((tool) => ({
+    name: tool.name,
+    description: tool.description,
+    input_schema: tool.inputSchema,
+  }));
+}
+
+function formatMcpToolContentBlock(block) {
+  switch (block.type) {
+    case "text":
+      return block.text;
+    case "resource_link":
+      return block.name ? `${block.name}: ${block.uri}` : block.uri;
+    case "resource":
+      return JSON.stringify(block.resource, null, 2);
+    default:
+      return JSON.stringify(block, null, 2);
+  }
+}
+
+function formatMcpToolResult(result) {
+  if (result.structuredContent && Object.keys(result.structuredContent).length > 0) {
+    return JSON.stringify(result.structuredContent, null, 2);
+  }
+
+  const textContent = result.content.map(formatMcpToolContentBlock).filter(Boolean).join("\n");
+  if (textContent) return textContent;
+
+  return JSON.stringify(result, null, 2);
+}
+
+async function getMcpConnection() {
+  if (mcpClient && mcpTransport && anthropicTools) {
+    return { client: mcpClient, tools: anthropicTools };
+  }
+
+  if (mcpConnectionPromise) return mcpConnectionPromise;
+
+  mcpConnectionPromise = (async () => {
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [MCP_SERVER_PATH],
+      cwd: MCP_SERVER_CWD,
+      env: { ...process.env },
+      stderr: "pipe",
     });
-    if (!res.ok) throw new Error(`Login failed: ${res.status}`);
-    const data = await res.json();
-    cachedToken = data.token;
-    tokenExpiry = Date.now() + 50 * 60 * 1000;
-    return cachedToken;
-  } catch (err) {
-    console.error("Auth error:", err.message);
-    throw err;
-  }
-}
 
-async function apiCall(method, path, body = null, auth = false) {
-  const headers = { "Content-Type": "application/json" };
-  if (auth) {
-    const token = await getAuthToken();
-    headers["Authorization"] = `Bearer ${token}`;
-  }
-  const opts = { method, headers };
-  if (body) opts.body = JSON.stringify(body);
-  const res = await fetch(`${API_BASE}${path}`, opts);
-  const data = await res.json();
-  return { status: res.status, data };
-}
-
-// ── MCP Tools Definition ──────────────────────────────────────
-const tools = [
-  {
-    name: "query_listings",
-    description:
-      "Search available short-term stay listings. Returns a paginated list of listings with details like title, location, city, country, capacity, price per night, and description.",
-    input_schema: {
-      type: "object",
-      properties: {
-        page: {
-          type: "number",
-          description: "Page number for pagination (10 items per page). Default is 1.",
-        },
-      },
-      required: [],
-    },
-  },
-  {
-    name: "book_listing",
-    description:
-      "Book a short-term stay listing. Requires listing ID, guest ID, check-in date, check-out date, and guest count. Optionally accepts guest names.",
-    input_schema: {
-      type: "object",
-      properties: {
-        listing_id: { type: "number", description: "The ID of the listing to book" },
-        guest_id: { type: "number", description: "The ID of the guest making the booking" },
-        from_date: { type: "string", description: "Check-in date in YYYY-MM-DD format" },
-        to_date: { type: "string", description: "Check-out date in YYYY-MM-DD format" },
-        guest_count: { type: "number", description: "Number of guests" },
-        guest_names: { type: "string", description: "Comma-separated guest names (optional)" },
-      },
-      required: ["listing_id", "guest_id", "from_date", "to_date", "guest_count"],
-    },
-  },
-  {
-    name: "review_listing",
-    description:
-      "Submit a review for a completed stay. Requires booking ID, listing ID, guest ID, and a rating (1-5). Optionally accepts a comment.",
-    input_schema: {
-      type: "object",
-      properties: {
-        booking_id: { type: "number", description: "The booking ID to review" },
-        listing_id: { type: "number", description: "The listing ID being reviewed" },
-        guest_id: { type: "number", description: "The guest ID writing the review" },
-        rating: { type: "number", description: "Rating from 1 to 5" },
-        comment: { type: "string", description: "Optional review comment" },
-      },
-      required: ["booking_id", "listing_id", "guest_id", "rating"],
-    },
-  },
-];
-
-// ── MCP Tool Execution (maps tool calls to API Gateway) ───────
-async function executeTool(toolName, toolInput) {
-  switch (toolName) {
-    case "query_listings": {
-      const page = toolInput.page || 1;
-      const { status, data } = await apiCall("GET", `/api/v1/listings?page=${page}`);
-      if (status !== 200) return JSON.stringify({ error: data });
-      return JSON.stringify({
-        total: data.total,
-        page: data.page,
-        totalPages: data.totalPages,
-        listings: data.listings,
+    if (transport.stderr) {
+      transport.stderr.on("data", (chunk) => {
+        const message = chunk.toString().trim();
+        if (message) console.error(`[mcp] ${message}`);
       });
     }
-    case "book_listing": {
-      const body = {
-        listing_id: toolInput.listing_id,
-        guest_id: toolInput.guest_id,
-        from_date: toolInput.from_date,
-        to_date: toolInput.to_date,
-        guest_count: toolInput.guest_count,
-      };
-      if (toolInput.guest_names) body.guest_names = toolInput.guest_names;
-      const { status, data } = await apiCall("POST", "/api/v1/bookings", body, true);
-      if (status === 201) {
-        return JSON.stringify({ success: true, message: "Booking created successfully!", booking: data.booking });
-      }
-      return JSON.stringify({ success: false, error: data.error || data.message || "Booking failed" });
+
+    transport.onclose = () => {
+      mcpClient = null;
+      mcpTransport = null;
+      anthropicTools = null;
+      mcpConnectionPromise = null;
+    };
+
+    transport.onerror = (error) => {
+      console.error("MCP transport error:", error.message);
+    };
+
+    const client = new Client(
+      { name: "listing-agent-backend", version: "1.0.0" },
+      { capabilities: {} }
+    );
+
+    await client.connect(transport);
+    const { tools } = await client.listTools();
+
+    mcpClient = client;
+    mcpTransport = transport;
+    anthropicTools = mapMcpToolsToAnthropic(tools);
+
+    return { client, tools: anthropicTools };
+  })().catch((error) => {
+    resetMcpConnection();
+    throw error;
+  });
+
+  return mcpConnectionPromise;
+}
+
+async function executeTool(toolName, toolInput) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      const { client } = await getMcpConnection();
+      const result = await client.callTool({
+        name: toolName,
+        arguments: toolInput,
+      });
+
+      return formatMcpToolResult(result);
+    } catch (error) {
+      lastError = error;
+      resetMcpConnection();
     }
-    case "review_listing": {
-      const body = {
-        booking_id: toolInput.booking_id,
-        listing_id: toolInput.listing_id,
-        guest_id: toolInput.guest_id,
-        rating: toolInput.rating,
-      };
-      if (toolInput.comment) body.comment = toolInput.comment;
-      const { status, data } = await apiCall("POST", "/api/v1/reviews", body, true);
-      if (status === 201) {
-        return JSON.stringify({ success: true, message: "Review submitted successfully!", review: data.review });
-      }
-      return JSON.stringify({ success: false, error: data.error || data.message || "Review failed" });
-    }
-    default:
-      return JSON.stringify({ error: `Unknown tool: ${toolName}` });
   }
+
+  throw lastError;
 }
 
 // ── Chat Endpoint ─────────────────────────────────────────────
@@ -161,6 +153,7 @@ app.post("/api/chat", async (req, res) => {
   try {
     const { message, sessionId = "default" } = req.body;
     if (!message) return res.status(400).json({ error: "Message is required" });
+    const { tools } = await getMcpConnection();
 
     // Get or create conversation history
     if (!conversationHistory.has(sessionId)) {
@@ -177,13 +170,13 @@ You help users with three main tasks:
 2. **Book a Listing** - Make a reservation for a listing
 3. **Review a Listing** - Leave a review for a completed stay
 
-When a user asks to see listings, use the query_listings tool.
-When a user wants to book, use the book_listing tool. The default guest_id is 1 unless specified.
-When a user wants to review, use the review_listing tool. The default guest_id is 1 unless specified.
+When a user asks to see listings, use the query_listings tool after you have these required details: country, city, check-in date, check-out date, and number of guests.
+When a user wants to book, use the book_listing tool after you have the listing ID, check-in date, check-out date, and the full list of guest names.
+When a user wants to review, use the review_listing tool after you have the booking ID and rating. A comment is optional.
 
 Always be friendly and provide clear information. Format listing results nicely.
 If the user provides partial info, ask for the missing details before making a tool call.
-For dates, use YYYY-MM-DD format.`;
+For dates, prefer YYYY-MM-DD format unless the user gives a full datetime.`;
 
     // Call Claude with tools — agentic loop
     let currentMessages = [...messages];
@@ -194,7 +187,7 @@ For dates, use YYYY-MM-DD format.`;
         model: "claude-sonnet-4-20250514",
         max_tokens: 4096,
         system: systemPrompt,
-        tools: tools,
+        tools,
         messages: currentMessages,
       });
 
