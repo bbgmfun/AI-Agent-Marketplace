@@ -260,8 +260,115 @@ async function executeTool(toolName, toolInput) {
   throw lastError;
 }
 
+function safeParseJson(value) {
+  if (typeof value !== "string") return null;
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function getSessionContext(sessionContexts, sessionId) {
+  if (!sessionContexts.has(sessionId)) {
+    sessionContexts.set(sessionId, {});
+  }
+
+  return sessionContexts.get(sessionId);
+}
+
+function updateSessionContextFromTool(sessionContexts, sessionId, toolName, toolInput, toolResult) {
+  const parsedResult = safeParseJson(toolResult);
+  if (!parsedResult || parsedResult.success !== true) return;
+
+  const context = getSessionContext(sessionContexts, sessionId);
+
+  if (toolName === "book_listing" && parsedResult.bookingId != null) {
+    context.lastBooking = {
+      bookingId: parsedResult.bookingId,
+      listingId: toolInput.listing_id,
+      fromDate: toolInput.from_date,
+      toDate: toolInput.to_date,
+      guestNames: Array.isArray(toolInput.guest_names) ? toolInput.guest_names : [],
+    };
+  }
+
+  if (toolName === "review_listing" && parsedResult.reviewId != null) {
+    context.lastReview = {
+      reviewId: parsedResult.reviewId,
+      bookingId: toolInput.booking_id,
+      rating: toolInput.rating,
+      comment: toolInput.comment || null,
+    };
+  }
+}
+
+function buildSessionContextPrompt(sessionContexts, sessionId) {
+  const context = sessionContexts.get(sessionId);
+  if (!context) return "";
+
+  const lines = [];
+
+  if (context.lastBooking?.bookingId != null) {
+    const bookingBits = [
+      `Recent booking in this session: booking ID ${context.lastBooking.bookingId}`,
+      context.lastBooking.listingId != null
+        ? `listing ID ${context.lastBooking.listingId}`
+        : null,
+      context.lastBooking.fromDate && context.lastBooking.toDate
+        ? `dates ${context.lastBooking.fromDate} to ${context.lastBooking.toDate}`
+        : null,
+      context.lastBooking.guestNames?.length
+        ? `guests ${context.lastBooking.guestNames.join(", ")}`
+        : null,
+    ].filter(Boolean);
+
+    lines.push(`- ${bookingBits.join(", ")}.`);
+  }
+
+  if (context.lastReview?.reviewId != null) {
+    lines.push(
+      `- Most recent review: review ID ${context.lastReview.reviewId} for booking ID ${context.lastReview.bookingId} with rating ${context.lastReview.rating}/5.`
+    );
+  }
+
+  if (lines.length === 0) return "";
+
+  return [
+    "Session context:",
+    ...lines,
+    "- If the user refers to their latest booking, 'that booking', or wants to review right after booking, use the recent booking above unless they specify a different booking ID.",
+  ].join("\n");
+}
+
+function trimConversationHistory(messages, maxMessages) {
+  if (messages.length <= maxMessages) {
+    return messages;
+  }
+
+  const trimmed = messages.slice(-maxMessages);
+
+  while (trimmed.length > 0) {
+    const firstMessage = trimmed[0];
+    const contentBlocks = Array.isArray(firstMessage.content) ? firstMessage.content : [];
+    const startsWithToolProtocol =
+      contentBlocks.some((block) => block.type === "tool_use") ||
+      contentBlocks.some((block) => block.type === "tool_result");
+
+    if (!startsWithToolProtocol) {
+      break;
+    }
+
+    trimmed.shift();
+  }
+
+  return trimmed;
+}
+
 // ── Chat Endpoint ─────────────────────────────────────────────
-const conversationHistory = new Map(); // sessionId -> messages[]
+const conversationHistory = new Map(); // sessionId -> Anthropic message history
+const sessionContexts = new Map(); // sessionId -> recent booking/review context
 const MAX_HISTORY_MESSAGES = 20;
 const MAX_AGENT_STEPS = 8;
 
@@ -279,6 +386,7 @@ app.post("/api/chat", async (req, res) => {
     const priorMessages = conversationHistory.get(sessionId);
 
     const currentMessages = [...priorMessages, { role: "user", content: message }];
+    const sessionContextPrompt = buildSessionContextPrompt(sessionContexts, sessionId);
 
     const systemPrompt = `You are a helpful AI assistant for a short-term stay booking platform (like Airbnb).
 You help users with three main tasks:
@@ -289,10 +397,15 @@ You help users with three main tasks:
 When a user asks to see listings, use the query_listings tool after you have these required details: country, city, check-in date, check-out date, and number of guests.
 When a user wants to book, use the book_listing tool after you have the listing ID, check-in date, check-out date, and the full list of guest names.
 When a user wants to review, use the review_listing tool after you have the booking ID and rating. A comment is optional.
+Users may write in Turkish or English. Understand both and prefer replying in the user's language.
 
 Always be friendly and provide clear information. Format listing results nicely.
 If the user provides partial info, ask for the missing details before making a tool call.
-For dates, prefer YYYY-MM-DD format unless the user gives a full datetime.`;
+For dates, prefer YYYY-MM-DD format unless the user gives a full datetime.
+After a successful booking, explicitly mention the booking ID and guest names in your reply.
+After a successful review, explicitly mention the booking ID, rating, and review ID when available.
+If the user wants to review the booking they just made and the session context already includes a recent booking ID, use that booking ID instead of asking for it again. Only ask for the missing rating or comment.
+${sessionContextPrompt ? `\n\n${sessionContextPrompt}` : ""}`;
 
     let finalResponse = "";
     let steps = 0;
@@ -324,6 +437,13 @@ For dates, prefer YYYY-MM-DD format unless the user gives a full datetime.`;
         for (const toolUse of toolUseBlocks) {
           console.log(`Calling tool: ${toolUse.name}`, toolUse.input);
           const result = await executeTool(toolUse.name, toolUse.input);
+          updateSessionContextFromTool(
+            sessionContexts,
+            sessionId,
+            toolUse.name,
+            toolUse.input,
+            result
+          );
           toolResults.push({
             type: "tool_result",
             tool_use_id: toolUse.id,
@@ -342,12 +462,11 @@ For dates, prefer YYYY-MM-DD format unless the user gives a full datetime.`;
       break;
     }
 
-    const updatedMessages = [
-      ...priorMessages,
-      { role: "user", content: message },
-      { role: "assistant", content: finalResponse },
-    ].slice(-MAX_HISTORY_MESSAGES);
-    conversationHistory.set(sessionId, updatedMessages);
+    currentMessages.push({ role: "assistant", content: finalResponse });
+    conversationHistory.set(
+      sessionId,
+      trimConversationHistory(currentMessages, MAX_HISTORY_MESSAGES)
+    );
 
     res.json({ response: finalResponse, sessionId, provider: llm.provider });
   } catch (err) {
@@ -376,6 +495,7 @@ For dates, prefer YYYY-MM-DD format unless the user gives a full datetime.`;
 app.post("/api/chat/clear", (req, res) => {
   const { sessionId = "default" } = req.body;
   conversationHistory.delete(sessionId);
+  sessionContexts.delete(sessionId);
   res.json({ message: "Conversation cleared" });
 });
 

@@ -61,6 +61,57 @@ const DEMO_LISTINGS = [
 ];
 const DEMO_CITIES = [...new Set(DEMO_LISTINGS.map((listing) => listing.city))];
 const DEMO_COUNTRIES = [...new Set(DEMO_LISTINGS.map((listing) => listing.country))];
+const QUERY_KEYWORDS = [
+  "show",
+  "search",
+  "find",
+  "query",
+  "available",
+  "browse",
+  "listele",
+  "ara",
+  "bul",
+  "musait",
+  "uygun",
+  "goster",
+];
+const BOOK_KEYWORDS = [
+  "book",
+  "reserve",
+  "reservation",
+  "rezervasyon",
+  "rezerv",
+  "ayirt",
+  "ayir",
+  "kirala",
+];
+const REVIEW_KEYWORDS = [
+  "review",
+  "rate",
+  "feedback",
+  "comment",
+  "yorum",
+  "degerlendir",
+  "puanla",
+  "puan",
+];
+const DETAILS_KEYWORDS = ["detail", "more about", "tell me more", "detay", "ayrinti"];
+const INITIAL_DEMO_STATE = {
+  lastQuery: null,
+  lastBooking: null,
+  lastReview: null,
+};
+
+function normalizeText(value) {
+  return value
+    .toLocaleLowerCase("tr-TR")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function getLastKeywordIndex(text, keywords) {
+  return keywords.reduce((max, keyword) => Math.max(max, text.lastIndexOf(keyword)), -1);
+}
 
 async function getApiErrorMessage(res) {
   try {
@@ -72,50 +123,166 @@ async function getApiErrorMessage(res) {
 }
 
 function classifyMessage(text) {
-  const lower = text.toLowerCase();
+  const lower = normalizeText(text);
+  const candidates = [];
+  const priority = { review: 4, book: 3, query: 2, details: 1 };
+  const hasListingContext = [
+    "listing",
+    "listings",
+    "stay",
+    "stays",
+    "place",
+    "places",
+    "ilan",
+    "ev",
+    "konaklama",
+  ].some((word) => lower.includes(word));
 
+  const queryIndex = getLastKeywordIndex(lower, QUERY_KEYWORDS);
   if (
-    lower.includes("listing") &&
-    ["show", "search", "find", "query", "available", "browse"].some((word) =>
-      lower.includes(word)
-    )
+    queryIndex >= 0 &&
+    (hasListingContext || /\b(paris|istanbul|france|turkey|\d+\s+(guest|guests|kisi))\b/.test(lower))
   ) {
-    return "query";
+    candidates.push({ intent: "query", index: queryIndex });
   }
 
-  if (["book", "reserve", "reservation"].some((word) => lower.includes(word))) {
-    return "book";
+  const bookIndex = getLastKeywordIndex(lower, BOOK_KEYWORDS);
+  if (bookIndex >= 0) {
+    candidates.push({ intent: "book", index: bookIndex });
   }
 
-  if (["review", "rate", "feedback", "comment"].some((word) => lower.includes(word))) {
-    return "review";
+  const reviewIndex = getLastKeywordIndex(lower, REVIEW_KEYWORDS);
+  if (reviewIndex >= 0) {
+    candidates.push({ intent: "review", index: reviewIndex });
   }
 
-  if (["detail", "more about", "tell me more"].some((word) => lower.includes(word))) {
-    return "details";
+  const detailsIndex = getLastKeywordIndex(lower, DETAILS_KEYWORDS);
+  if (detailsIndex >= 0) {
+    candidates.push({ intent: "details", index: detailsIndex });
   }
 
-  return "default";
+  if (candidates.length === 0) {
+    return "default";
+  }
+
+  candidates.sort(
+    (a, b) => b.index - a.index || priority[b.intent] - priority[a.intent]
+  );
+
+  return candidates[0].intent;
 }
 
 function findDemoLocationMatch(text, values) {
-  const lower = text.toLowerCase();
-  return values.find((value) => lower.includes(value.toLowerCase())) || null;
+  const lower = normalizeText(text);
+  return values.find((value) => lower.includes(normalizeText(value))) || null;
 }
 
 function extractDemoGuestCount(text) {
+  const normalized = normalizeText(text);
   const guestMatch =
-    text.match(/\bfor\s+(\d+)\s+(?:guest|guests|people|persons)\b/i) ||
-    text.match(/\b(\d+)\s+(?:guest|guests|people|persons)\b/i);
+    normalized.match(/\bfor\s+(\d+)\s+(?:guest|guests|people|persons|kisi)\b/i) ||
+    normalized.match(/\b(\d+)\s+(?:guest|guests|people|persons|kisi)\b/i);
 
   return guestMatch ? Number.parseInt(guestMatch[1], 10) : null;
 }
 
+function extractDemoDates(text) {
+  const dates = [...text.matchAll(/\b\d{4}-\d{2}-\d{2}\b/g)].map((match) => match[0]);
+  return {
+    fromDate: dates[0] || null,
+    toDate: dates[1] || null,
+  };
+}
+
+function extractDemoListingId(text) {
+  const match =
+    text.match(/\blisting\s*(?:id)?\s*#?\s*(\d+)\b/i) ||
+    text.match(/\bilan\s*(?:id)?\s*#?\s*(\d+)\b/i) ||
+    text.match(/\bid\s*[:#]?\s*(\d+)\b/i);
+
+  return match ? Number.parseInt(match[1], 10) : null;
+}
+
+function extractDemoBookingId(text) {
+  const match =
+    text.match(/\bBK-\d+\b/i) ||
+    text.match(/\bbooking\s*(?:id)?\s*[:#]?\s*(\d+)\b/i);
+
+  if (!match) return null;
+  return match[0].toUpperCase().startsWith("BK-") ? match[0].toUpperCase() : `BK-${match[1]}`;
+}
+
+function splitDemoGuestNames(raw) {
+  return raw
+    .split(/\s*(?:,| and | & | ile | ve )\s*/i)
+    .map((name) => name.trim().replace(/^["'`]+|["'`]+$/g, "").replace(/\.$/, ""))
+    .filter(Boolean)
+    .filter((name) => {
+      const normalized = normalizeText(name);
+      return (
+        /[a-z]/i.test(name) &&
+        !/^(guest|guests|people|persons|kisi|kisiler|\d+)$/i.test(normalized) &&
+        !/^\d+\s*(guest|guests|people|persons|kisi|kisiler)$/i.test(normalized) &&
+        !/^(from|between)\b/i.test(normalized)
+      );
+    });
+}
+
+function extractDemoGuestNames(text) {
+  const patterns = [
+    /guest names?\s*[:\-]\s*(.+)$/i,
+    /guests?\s*[:\-]\s*(.+)$/i,
+    /isim(?:ler[iı])?\s*[:\-]\s*(.+)$/i,
+    /\bfor\s+(.+?)\s+(?:from|between|check-?in|\d{4}-\d{2}-\d{2}|$)/i,
+    /\bad[ıi]na\s+(.+?)\s+(?:i[cç]in|from|\d{4}-\d{2}-\d{2}|$)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (!match?.[1]) continue;
+
+    const names = splitDemoGuestNames(match[1]);
+    if (names.length > 0) return names;
+  }
+
+  return [];
+}
+
+function extractDemoRating(text) {
+  const normalized = normalizeText(text);
+  const match = normalized.match(/\b([1-5])(?:\s*\/\s*5|\s*(?:star|stars|yildiz|puan))?\b/);
+  return match ? Number.parseInt(match[1], 10) : null;
+}
+
+function extractDemoComment(text) {
+  const quotedMatch = text.match(/["“](.+?)["”]/);
+  if (quotedMatch?.[1]) {
+    return quotedMatch[1].trim();
+  }
+
+  const patterns = [
+    /(?:comment|feedback|yorum)\s*[:\-]?\s*(.+)$/i,
+    /\bbecause\s+(.+)$/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) {
+      return match[1].trim();
+    }
+  }
+
+  return null;
+}
+
 function extractDemoQueryFilters(text) {
+  const { fromDate, toDate } = extractDemoDates(text);
   return {
     city: findDemoLocationMatch(text, DEMO_CITIES),
     country: findDemoLocationMatch(text, DEMO_COUNTRIES),
     guests: extractDemoGuestCount(text),
+    fromDate,
+    toDate,
   };
 }
 
@@ -146,11 +313,13 @@ function formatDemoQueryFilters(filters) {
   if (filters.city) parts.push(`city: ${filters.city}`);
   if (filters.country) parts.push(`country: ${filters.country}`);
   if (filters.guests) parts.push(`guests: ${filters.guests}`);
+  if (filters.fromDate) parts.push(`check-in: ${filters.fromDate}`);
+  if (filters.toDate) parts.push(`check-out: ${filters.toDate}`);
 
   return parts.length > 0 ? parts.join(" | ") : null;
 }
 
-function buildQueryDemoResponse(text) {
+function buildQueryDemoResponse(text, demoState) {
   const { filters, listings } = filterDemoListings(text);
   const appliedFilters = formatDemoQueryFilters(filters);
   const lines = listings.map(
@@ -159,99 +328,203 @@ function buildQueryDemoResponse(text) {
   );
 
   if (lines.length === 0) {
-    return [
+    return {
+      content: [
+        "Demo mode is active, so these are sample listings rather than live API results.",
+        appliedFilters ? `Applied filters: ${appliedFilters}` : null,
+        "",
+        "I couldn't find a sample listing that matches this search.",
+        "Try changing the city or the guest count.",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      nextState: {
+        ...demoState,
+        lastQuery: { filters, listings: [] },
+      },
+    };
+  }
+
+  return {
+    content: [
       "Demo mode is active, so these are sample listings rather than live API results.",
       appliedFilters ? `Applied filters: ${appliedFilters}` : null,
       "",
-      "I couldn't find a sample listing that matches this search.",
-      "Try changing the city or the guest count.",
+      "**Available listings**",
+      ...lines,
+      "",
+      "To continue, you can say something like:",
+      `- "Book listing ${listings[0].id} for Begum Bal from 2026-06-05 to 2026-06-08"`,
     ]
       .filter(Boolean)
-      .join("\n");
+      .join("\n"),
+    nextState: {
+      ...demoState,
+      lastQuery: { filters, listings },
+    },
+  };
+}
+
+function resolveDemoListing(text, demoState) {
+  const listingId = extractDemoListingId(text);
+  if (listingId) {
+    return (
+      DEMO_LISTINGS.find((listing) => listing.id === listingId) ||
+      demoState.lastQuery?.listings?.[0] ||
+      DEMO_LISTINGS[0]
+    );
   }
 
-  return [
-    "Demo mode is active, so these are sample listings rather than live API results.",
-    appliedFilters ? `Applied filters: ${appliedFilters}` : null,
-    "",
-    "**Available listings**",
-    ...lines,
-    "",
-    "To continue, you can say something like:",
-    `- "Book listing ${listings[0].id} for 2 guests from 2026-06-05 to 2026-06-08"`,
-  ]
-    .filter(Boolean)
-    .join("\n");
+  const normalized = normalizeText(text);
+  if (demoState.lastQuery?.listings?.length) {
+    if (/\b(first|1st|ilk)\b/i.test(normalized)) return demoState.lastQuery.listings[0];
+    if (/\b(second|2nd|ikinci)\b/i.test(normalized)) {
+      return demoState.lastQuery.listings[1] || demoState.lastQuery.listings[0];
+    }
+    return demoState.lastQuery.listings[0];
+  }
+
+  return DEMO_LISTINGS[0];
 }
 
-function buildBookingDemoResponse() {
-  return [
-    "Demo mode booking preview:",
-    "",
-    "- Listing: **Charming Studio with Terrace**",
-    "- Booking ID: `BK-98765432`",
-    "- Status: **Confirmed**",
-    "- Dates: `2026-06-05` to `2026-06-08`",
-    "- Guests: `John Doe`, `Jane Doe`",
-    "",
-    "Live booking requires the backend to run with a valid Anthropic API key.",
-  ].join("\n");
+function buildBookingDemoResponse(text, demoState) {
+  const listing = resolveDemoListing(text, demoState);
+  const { fromDate, toDate } = extractDemoDates(text);
+  const guestNames = extractDemoGuestNames(text);
+  const booking = {
+    bookingId: `BK-${Date.now().toString().slice(-8)}`,
+    listing,
+    fromDate: fromDate || demoState.lastQuery?.filters?.fromDate || "2026-06-05",
+    toDate: toDate || demoState.lastQuery?.filters?.toDate || "2026-06-08",
+    guestNames: guestNames.length > 0 ? guestNames : ["Guest name missing"],
+  };
+
+  return {
+    content: [
+      "Demo mode booking preview:",
+      "",
+      `- Listing: **${booking.listing.title}**`,
+      `- Booking ID: \`${booking.bookingId}\``,
+      "- Status: **Confirmed**",
+      `- Dates: \`${booking.fromDate}\` to \`${booking.toDate}\``,
+      `- Guests: ${booking.guestNames.map((name) => `\`${name}\``).join(", ")}`,
+      "",
+      guestNames.length === 0
+        ? "I could not detect the guest names from your message, so I kept a placeholder. Include the names explicitly to see them here in demo mode."
+        : "Guest names were taken from your message so the preview matches your booking request.",
+      "Live booking requires the backend to run with a valid Anthropic API key.",
+    ].join("\n"),
+    nextState: {
+      ...demoState,
+      lastBooking: booking,
+    },
+  };
 }
 
-function buildReviewDemoResponse() {
-  return [
-    "Demo mode review preview:",
-    "",
-    "- Booking ID: `BK-98765432`",
-    "- Rating: **5/5**",
-    '- Comment: "Amazing stay with a great location."',
-    "",
-    "Live review submission requires the backend to run with a valid Anthropic API key.",
-  ].join("\n");
+function buildReviewDemoResponse(text, demoState) {
+  const requestedBookingId = extractDemoBookingId(text);
+  const booking =
+    (requestedBookingId &&
+      demoState.lastBooking?.bookingId === requestedBookingId &&
+      demoState.lastBooking) ||
+    demoState.lastBooking;
+
+  if (!booking && !requestedBookingId) {
+    return {
+      content: [
+        "Demo mode review preview needs a booking first.",
+        "",
+        "Book a listing in this chat or include a booking ID such as `BK-12345678` in your message.",
+      ].join("\n"),
+      nextState: demoState,
+    };
+  }
+
+  const rating = extractDemoRating(text) || 5;
+  const comment = extractDemoComment(text) || "Amazing stay with a great location.";
+  const activeBookingId = requestedBookingId || booking?.bookingId || "BK-98765432";
+  const activeListingTitle = booking?.listing?.title || "Charming Studio with Terrace";
+  const review = {
+    bookingId: activeBookingId,
+    listingTitle: activeListingTitle,
+    rating,
+    comment,
+    reviewId: `RV-${Date.now().toString().slice(-8)}`,
+  };
+
+  return {
+    content: [
+      "Demo mode review preview:",
+      "",
+      `- Booking ID: \`${review.bookingId}\``,
+      `- Listing: **${review.listingTitle}**`,
+      `- Rating: **${review.rating}/5**`,
+      `- Comment: "${review.comment}"`,
+      `- Review ID: \`${review.reviewId}\``,
+      "",
+      booking
+        ? "The review used the latest booking in this chat, so you do not need to repeat the booking ID every time in demo mode."
+        : "The review used the booking ID from your message.",
+      "Live review submission requires the backend to run with a valid Anthropic API key.",
+    ].join("\n"),
+    nextState: {
+      ...demoState,
+      lastReview: review,
+    },
+  };
 }
 
-function buildDetailsDemoResponse(text) {
-  const lower = text.toLowerCase();
+function buildDetailsDemoResponse(text, demoState) {
+  const lower = normalizeText(text);
   const listing =
-    DEMO_LISTINGS.find((item) => lower.includes(item.title.toLowerCase())) || DEMO_LISTINGS[0];
+    DEMO_LISTINGS.find((item) => lower.includes(normalizeText(item.title))) || DEMO_LISTINGS[0];
 
-  return [
-    `**${listing.title}**`,
-    "",
-    `- Listing ID: \`${listing.id}\``,
-    `- Location: ${listing.city}, ${listing.country}`,
-    `- Capacity: ${listing.capacity} guests`,
-    `- Price: $${listing.pricePerNight}/night`,
-    `- Rating: ${listing.rating}`,
-    "",
-    "This is a demo description shown because live AI mode is unavailable right now.",
-  ].join("\n");
+  return {
+    content: [
+      `**${listing.title}**`,
+      "",
+      `- Listing ID: \`${listing.id}\``,
+      `- Location: ${listing.city}, ${listing.country}`,
+      `- Capacity: ${listing.capacity} guests`,
+      `- Price: $${listing.pricePerNight}/night`,
+      `- Rating: ${listing.rating}`,
+      "",
+      "This is a demo description shown because live AI mode is unavailable right now.",
+    ].join("\n"),
+    nextState: demoState,
+  };
 }
 
-function buildDefaultDemoResponse() {
-  return [
-    "I can help with these demo actions:",
-    "",
-    "- **Query Listings**: ask for available places",
-    "- **Book a Listing**: ask to make a reservation",
-    "- **Review a Listing**: ask to submit feedback",
-    "",
-    "Example: `Show me available listings in Istanbul for 2 guests`",
-  ].join("\n");
+function buildDefaultDemoResponse(demoState) {
+  return {
+    content: [
+      "I can help with these demo actions:",
+      "",
+      "- **Query Listings**: ask for available places",
+      "- **Book a Listing**: ask to make a reservation",
+      "- **Review a Listing**: ask to submit feedback",
+      "",
+      "Examples:",
+      "- `Show me available listings in Istanbul for 2 guests`",
+      "- `Book listing 201 for Begum Bal from 2026-06-05 to 2026-06-08`",
+      "- `Review my last booking with 5 stars and comment: Great stay`",
+    ].join("\n"),
+    nextState: demoState,
+  };
 }
 
-function buildDemoResponse(text) {
+function buildDemoResponse(text, demoState) {
   switch (classifyMessage(text)) {
     case "query":
-      return buildQueryDemoResponse(text);
+      return buildQueryDemoResponse(text, demoState);
     case "book":
-      return buildBookingDemoResponse();
+      return buildBookingDemoResponse(text, demoState);
     case "review":
-      return buildReviewDemoResponse();
+      return buildReviewDemoResponse(text, demoState);
     case "details":
-      return buildDetailsDemoResponse(text);
+      return buildDetailsDemoResponse(text, demoState);
     default:
-      return buildDefaultDemoResponse();
+      return buildDefaultDemoResponse(demoState);
   }
 }
 
@@ -271,6 +544,7 @@ function App() {
   const [sessionId] = useState(() => "session-" + Date.now());
   const [mode, setMode] = useState("checking");
   const [bannerMessage, setBannerMessage] = useState("Checking backend status...");
+  const [demoState, setDemoState] = useState(INITIAL_DEMO_STATE);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
 
@@ -336,7 +610,9 @@ function App() {
 
   const sendDemoMessage = async (text) => {
     await new Promise((resolve) => window.setTimeout(resolve, 600));
-    addAssistantMessage(buildDemoResponse(text));
+    const { content, nextState } = buildDemoResponse(text, demoState);
+    setDemoState(nextState);
+    addAssistantMessage(content);
   };
 
   const sendMessage = async (text) => {
@@ -407,6 +683,7 @@ function App() {
         content: "Describe the stay you need and I can help you search, book, or review a listing.",
       },
     ]);
+    setDemoState(INITIAL_DEMO_STATE);
   };
 
   return (
