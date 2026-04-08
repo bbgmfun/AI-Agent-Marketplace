@@ -144,11 +144,66 @@
       { id: 3, title: "Sunny Apartment in Taksim", city: "Istanbul", country: "Turkey", capacity: 4, price_per_night: 85, description: "Spacious apartment in the heart of Istanbul" },
       { id: 4, title: "Modern Loft in Kadikoy", city: "Istanbul", country: "Turkey", capacity: 3, price_per_night: 95, rating: 4.5, description: "Stylish loft with Bosphorus view" },
     ];
+    const DEMO_CITIES = [...new Set(DEMO_LISTINGS.map((listing) => listing.city))];
+    const DEMO_COUNTRIES = [...new Set(DEMO_LISTINGS.map((listing) => listing.country))];
+
+    function findDemoLocationMatch(msg, values) {
+      const lower = msg.toLowerCase();
+      return values.find((value) => lower.includes(value.toLowerCase())) || null;
+    }
+
+    function extractDemoGuestCount(msg) {
+      const guestMatch =
+        msg.match(/\bfor\s+(\d+)\s+(?:guest|guests|people|persons)\b/i) ||
+        msg.match(/\b(\d+)\s+(?:guest|guests|people|persons)\b/i);
+
+      return guestMatch ? Number.parseInt(guestMatch[1], 10) : null;
+    }
+
+    function filterDemoListings(msg) {
+      const filters = {
+        city: findDemoLocationMatch(msg, DEMO_CITIES),
+        country: findDemoLocationMatch(msg, DEMO_COUNTRIES),
+        guests: extractDemoGuestCount(msg),
+      };
+
+      const listings = DEMO_LISTINGS.filter((listing) => {
+        if (filters.city && listing.city.toLowerCase() !== filters.city.toLowerCase()) return false;
+        if (filters.country && listing.country.toLowerCase() !== filters.country.toLowerCase()) return false;
+        if (filters.guests && listing.capacity < filters.guests) return false;
+        return true;
+      });
+
+      return { filters, listings };
+    }
+
+    function formatDemoFilters(filters) {
+      return [
+        filters.city ? `City: ${filters.city}` : null,
+        filters.country ? `Country: ${filters.country}` : null,
+        filters.guests ? `Guests: ${filters.guests}` : null,
+      ].filter(Boolean).join(" • ");
+    }
 
     const DEMO_RESPONSES = {
       query: (msg) => {
-        const cards = DEMO_LISTINGS.map(l => renderListingCard(l)).join("");
-        return `<div style="margin-bottom:4px"><b>Available listings:</b></div>${cards}`;
+        const { filters, listings } = filterDemoListings(msg);
+        const filterLabel = formatDemoFilters(filters);
+
+        if (!listings.length) {
+          return `
+            <div style="margin-bottom:4px"><b>No matching sample listings</b></div>
+            ${filterLabel ? `<div style="color:#64748b;font-size:12px;margin-bottom:8px">${filterLabel}</div>` : ""}
+            <div style="color:#475569">Try changing the city or guest count.</div>
+          `;
+        }
+
+        const cards = listings.map(l => renderListingCard(l)).join("");
+        return `
+          <div style="margin-bottom:4px"><b>Available listings:</b></div>
+          ${filterLabel ? `<div style="color:#64748b;font-size:12px;margin-bottom:8px">${filterLabel}</div>` : ""}
+          ${cards}
+        `;
       },
       book: () => {
         return `<div class="booking-card">

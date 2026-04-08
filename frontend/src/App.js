@@ -59,6 +59,8 @@ const DEMO_LISTINGS = [
     rating: 4.5,
   },
 ];
+const DEMO_CITIES = [...new Set(DEMO_LISTINGS.map((listing) => listing.city))];
+const DEMO_COUNTRIES = [...new Set(DEMO_LISTINGS.map((listing) => listing.country))];
 
 async function getApiErrorMessage(res) {
   try {
@@ -96,21 +98,90 @@ function classifyMessage(text) {
   return "default";
 }
 
-function buildQueryDemoResponse() {
-  const lines = DEMO_LISTINGS.map(
+function findDemoLocationMatch(text, values) {
+  const lower = text.toLowerCase();
+  return values.find((value) => lower.includes(value.toLowerCase())) || null;
+}
+
+function extractDemoGuestCount(text) {
+  const guestMatch =
+    text.match(/\bfor\s+(\d+)\s+(?:guest|guests|people|persons)\b/i) ||
+    text.match(/\b(\d+)\s+(?:guest|guests|people|persons)\b/i);
+
+  return guestMatch ? Number.parseInt(guestMatch[1], 10) : null;
+}
+
+function extractDemoQueryFilters(text) {
+  return {
+    city: findDemoLocationMatch(text, DEMO_CITIES),
+    country: findDemoLocationMatch(text, DEMO_COUNTRIES),
+    guests: extractDemoGuestCount(text),
+  };
+}
+
+function filterDemoListings(text) {
+  const filters = extractDemoQueryFilters(text);
+  const listings = DEMO_LISTINGS.filter((listing) => {
+    if (filters.city && listing.city.toLowerCase() !== filters.city.toLowerCase()) {
+      return false;
+    }
+
+    if (filters.country && listing.country.toLowerCase() !== filters.country.toLowerCase()) {
+      return false;
+    }
+
+    if (filters.guests && listing.capacity < filters.guests) {
+      return false;
+    }
+
+    return true;
+  });
+
+  return { filters, listings };
+}
+
+function formatDemoQueryFilters(filters) {
+  const parts = [];
+
+  if (filters.city) parts.push(`city: ${filters.city}`);
+  if (filters.country) parts.push(`country: ${filters.country}`);
+  if (filters.guests) parts.push(`guests: ${filters.guests}`);
+
+  return parts.length > 0 ? parts.join(" | ") : null;
+}
+
+function buildQueryDemoResponse(text) {
+  const { filters, listings } = filterDemoListings(text);
+  const appliedFilters = formatDemoQueryFilters(filters);
+  const lines = listings.map(
     (listing) =>
       `- **${listing.title}**  \n  ID: \`${listing.id}\` | ${listing.city}, ${listing.country} | ${listing.capacity} guests | $${listing.pricePerNight}/night | Rating: ${listing.rating}`
   );
 
+  if (lines.length === 0) {
+    return [
+      "Demo mode is active, so these are sample listings rather than live API results.",
+      appliedFilters ? `Applied filters: ${appliedFilters}` : null,
+      "",
+      "I couldn't find a sample listing that matches this search.",
+      "Try changing the city or the guest count.",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+
   return [
     "Demo mode is active, so these are sample listings rather than live API results.",
+    appliedFilters ? `Applied filters: ${appliedFilters}` : null,
     "",
     "**Available listings**",
     ...lines,
     "",
     "To continue, you can say something like:",
-    '- "Book listing 101 for 2 guests from 2026-06-05 to 2026-06-08"',
-  ].join("\n");
+    `- "Book listing ${listings[0].id} for 2 guests from 2026-06-05 to 2026-06-08"`,
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function buildBookingDemoResponse() {
@@ -172,7 +243,7 @@ function buildDefaultDemoResponse() {
 function buildDemoResponse(text) {
   switch (classifyMessage(text)) {
     case "query":
-      return buildQueryDemoResponse();
+      return buildQueryDemoResponse(text);
     case "book":
       return buildBookingDemoResponse();
     case "review":
