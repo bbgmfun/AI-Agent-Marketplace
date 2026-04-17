@@ -16,6 +16,17 @@ An AI-powered chat application that allows users to interact with a Short-Term S
 ## Demo Video
 - **Video Link:** Add your OneDrive, Google Drive, or YouTube demo link here before submission.
 
+## Demo Flow For Submission
+Use this flow in the recording so the professor sees the full agent loop:
+1. Open the app at `http://localhost:3000`.
+2. Show the home screen and explain that the app has three actions: search listings, book a listing, and review a listing.
+3. Run a search such as `Show me available listings in Istanbul for 2 guests from 2026-06-05 to 2026-06-08`.
+4. Pick one listing and book it with a full guest name, for example `Book listing 201 for Begum Bal from 2026-06-05 to 2026-06-08`.
+5. Immediately review the booking, for example `Review my last booking with 5 stars and comment: Great stay`.
+6. End by showing that the booking ID and review ID are returned in the chat.
+
+If the live LLM is not ready, the app automatically falls back to demo mode so you can still record the full flow without errors.
+
 ---
 
 ## Architecture

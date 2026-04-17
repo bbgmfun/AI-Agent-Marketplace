@@ -106,11 +106,50 @@ function normalizeText(value) {
   return value
     .toLocaleLowerCase("tr-TR")
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/ı/g, "i");
 }
 
 function getLastKeywordIndex(text, keywords) {
   return keywords.reduce((max, keyword) => Math.max(max, text.lastIndexOf(keyword)), -1);
+}
+
+function getDemoMonthNumber(monthName) {
+  const normalized = normalizeText(monthName);
+  const monthMap = {
+    january: "01",
+    february: "02",
+    march: "03",
+    april: "04",
+    may: "05",
+    june: "06",
+    july: "07",
+    august: "08",
+    september: "09",
+    october: "10",
+    november: "11",
+    december: "12",
+    ocak: "01",
+    subat: "02",
+    şubat: "02",
+    mart: "03",
+    nisan: "04",
+    mayis: "05",
+    mayıs: "05",
+    haziran: "06",
+    temmuz: "07",
+    agustos: "08",
+    ağustos: "08",
+    eylul: "09",
+    eylül: "09",
+    ekim: "10",
+    kasim: "11",
+    kasım: "11",
+    aralik: "12",
+    aralık: "12",
+  };
+
+  return monthMap[normalized] || null;
 }
 
 async function getApiErrorMessage(res) {
@@ -181,13 +220,34 @@ function extractDemoGuestCount(text) {
   const normalized = normalizeText(text);
   const guestMatch =
     normalized.match(/\bfor\s+(\d+)\s+(?:guest|guests|people|persons|kisi)\b/i) ||
-    normalized.match(/\b(\d+)\s+(?:guest|guests|people|persons|kisi)\b/i);
+    normalized.match(/\b(\d+)\s+(?:guest|guests|people|persons|kisi|kişi)\b/i);
 
   return guestMatch ? Number.parseInt(guestMatch[1], 10) : null;
 }
 
 function extractDemoDates(text) {
   const dates = [...text.matchAll(/\b\d{4}-\d{2}-\d{2}\b/g)].map((match) => match[0]);
+  const monthRangePatterns = [
+    /\b(?:from\s+)?(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})\s+(?:to|until|and|-)\s+(?:the\s+)?(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})\b/i,
+    /\b(?:from\s+)?(ocak|subat|şubat|mart|nisan|mayis|mayıs|haziran|temmuz|agustos|ağustos|eylul|eylül|ekim|kasim|kasım|aralik|aralık)\s+(\d{1,2})\s+(?:ile|to|until|and|-)\s+(?:the\s+)?(ocak|subat|şubat|mart|nisan|mayis|mayıs|haziran|temmuz|agustos|ağustos|eylul|eylül|ekim|kasim|kasım|aralik|aralık)\s+(\d{1,2})\b/i,
+  ];
+
+  for (const pattern of monthRangePatterns) {
+    const match = text.match(pattern);
+    if (match?.[1] && match?.[2] && match?.[3] && match?.[4]) {
+      const fromMonth = getDemoMonthNumber(match[1]);
+      const toMonth = getDemoMonthNumber(match[3]);
+      const year = "2026";
+
+      if (fromMonth && toMonth) {
+      return {
+          fromDate: `${year}-${fromMonth}-${match[2].padStart(2, "0")}`,
+          toDate: `${year}-${toMonth}-${match[4].padStart(2, "0")}`,
+        };
+      }
+    }
+  }
+
   return {
     fromDate: dates[0] || null,
     toDate: dates[1] || null,
@@ -228,20 +288,30 @@ function splitDemoGuestNames(raw) {
     });
 }
 
-function extractDemoGuestNames(text) {
+function getDemoGuestNameSegment(text) {
   const patterns = [
-    /guest names?\s*[:\-]\s*(.+)$/i,
-    /guests?\s*[:\-]\s*(.+)$/i,
-    /isim(?:ler[iı])?\s*[:\-]\s*(.+)$/i,
-    /\bfor\s+(.+?)\s+(?:from|between|check-?in|\d{4}-\d{2}-\d{2}|$)/i,
-    /\bad[ıi]na\s+(.+?)\s+(?:i[cç]in|from|\d{4}-\d{2}-\d{2}|$)/i,
+    /(?:guest names?|names? of guests?)\s*[:\-]\s*(.+)$/i,
+    /(?:guest|guests|misafir(?:ler)?|isim(?:ler[iı])?)\s*[:\-]\s*(.+)$/i,
+    /\b(?:for|with|under)\s+(.+?)(?=\s+(?:from|between|to|until|check-?in|check-?out|on|for\s+\d{4}-\d{2}-\d{2}|$))/i,
+    /\b(?:my name is|i am|i'm|i’m)\s+(.+?)(?=\s+(?:from|between|check-?in|check-?out|$))/i,
+    /\bad[ıi]na\s+(.+?)(?=\s+(?:i[cç]in|from|between|check-?in|check-?out|$))/i,
+    /\b(?:benim adım|adım)\s+(.+?)(?=\s+(?:from|between|check-?in|check-?out|$))/i,
   ];
 
   for (const pattern of patterns) {
     const match = text.match(pattern);
-    if (!match?.[1]) continue;
+    if (match?.[1]) {
+      return match[1].trim();
+    }
+  }
 
-    const names = splitDemoGuestNames(match[1]);
+  return null;
+}
+
+function extractDemoGuestNames(text) {
+  const matchText = getDemoGuestNameSegment(text);
+  if (matchText) {
+    const names = splitDemoGuestNames(matchText);
     if (names.length > 0) return names;
   }
 
@@ -391,12 +461,13 @@ function buildBookingDemoResponse(text, demoState) {
   const listing = resolveDemoListing(text, demoState);
   const { fromDate, toDate } = extractDemoDates(text);
   const guestNames = extractDemoGuestNames(text);
+  const finalGuestNames = guestNames.length > 0 ? guestNames : ["Guest 1"];
   const booking = {
     bookingId: `BK-${Date.now().toString().slice(-8)}`,
     listing,
     fromDate: fromDate || demoState.lastQuery?.filters?.fromDate || "2026-06-05",
     toDate: toDate || demoState.lastQuery?.filters?.toDate || "2026-06-08",
-    guestNames: guestNames.length > 0 ? guestNames : ["Guest name missing"],
+    guestNames: finalGuestNames,
   };
 
   return {
@@ -410,7 +481,7 @@ function buildBookingDemoResponse(text, demoState) {
       `- Guests: ${booking.guestNames.map((name) => `\`${name}\``).join(", ")}`,
       "",
       guestNames.length === 0
-        ? "I could not detect the guest names from your message, so I kept a placeholder. Include the names explicitly to see them here in demo mode."
+        ? "I could not confidently detect the guest names from your message, so I used a placeholder. Include the full names explicitly to make the booking preview exact."
         : "Guest names were taken from your message so the preview matches your booking request.",
       "Live booking requires the backend to run with a valid Anthropic API key.",
     ].join("\n"),
@@ -434,7 +505,7 @@ function buildReviewDemoResponse(text, demoState) {
       content: [
         "Demo mode review preview needs a booking first.",
         "",
-        "Book a listing in this chat or include a booking ID such as `BK-12345678` in your message.",
+        "Book a listing in this chat first, or include a booking ID such as `BK-12345678` in your message.",
       ].join("\n"),
       nextState: demoState,
     };
